@@ -27,17 +27,17 @@ from tqdm import tqdm
 
 parser = argparse.ArgumentParser(description='Create a torrent file from local data files.')
 parser.add_argument('-o', '--outfile', metavar='TORRENT_PATH', type=pathlib.Path, required=True,
-                    help='path to the desired output torrent file')
+                    help='output the torrent file at this path')
 parser.add_argument('-p', '--private', action='store_true',
-                    help='allow torrent to be used only with a single tracker')
+                    help='allow the torrent to be used only with a single tracker')
 parser.add_argument('-r', '--source',
-                    help='informal private tracker name or label to distinguish equivalent private torrents on different trackers')
+                    help='set an informal private tracker name or label to distinguish equivalent private torrents on different trackers')
 parser.add_argument('-s', '--piecesize', metavar='PIECE_KiB', type=int, required=True,
-                    help='power-of-two piece size in KiB')
+                    help='set the power-of-two piece size in KiB')
 parser.add_argument('-t', '--tracker', action='append',
-                    help="tracker's announce URL")
+                    help="add a tracker's announce URL")
 parser.add_argument('--root', metavar='PATH', type=pathlib.Path,
-                    help="path to map to the torrent's root directory (defaults to the deepest common directory of all input paths)")
+                    help="override the path that maps to the torrent's root directory (by default, the deepest common directory of all input paths)")
 parser.add_argument('local_data', type=pathlib.Path, nargs='+',
                     help='paths to the local data files or (sub)directories')
 args = parser.parse_args()
