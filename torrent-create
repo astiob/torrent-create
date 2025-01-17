@@ -1,0 +1,199 @@
+#!/usr/bin/env python3
+
+# BSD Zero Clause License
+#
+# Copyright (c) 2025 Oleg Oshmyan (Chortos-2) <chortos@inbox.lv>
+#
+# Permission to use, copy, modify, and/or distribute this software for any
+# purpose with or without fee is hereby granted.
+#
+# THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+# REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
+# AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+# INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+# LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
+# OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+# PERFORMANCE OF THIS SOFTWARE.
+
+import argparse
+import hashlib
+from itertools import chain
+import os
+import pathlib
+import stat
+import time
+import torrent_parser as tp
+from tqdm import tqdm
+
+parser = argparse.ArgumentParser(description='Create a torrent file from local data files.')
+parser.add_argument('-o', '--outfile', metavar='TORRENT_PATH', type=pathlib.Path, required=True,
+                    help='path to the desired output torrent file')
+parser.add_argument('-p', '--private', action='store_true',
+                    help='allow torrent to be used only with a single tracker')
+parser.add_argument('-r', '--source',
+                    help='informal private tracker name or label to distinguish equivalent private torrents on different trackers')
+parser.add_argument('-s', '--piecesize', metavar='PIECE_KiB', type=int, required=True,
+                    help='power-of-two piece size in KiB')
+parser.add_argument('-t', '--tracker', action='append',
+                    help="tracker's announce URL")
+parser.add_argument('--root', metavar='PATH', type=pathlib.Path,
+                    help="path to map to the torrent's root directory (defaults to the deepest common directory of all input paths)")
+parser.add_argument('local_data', type=pathlib.Path, nargs='+',
+                    help='paths to the local data files or (sub)directories')
+args = parser.parse_args()
+
+if args.outfile in args.local_data:
+	parser.error('the specified output path is the same as one of the inputs')
+
+if args.root is None:
+	root = args.local_data[0]
+	for path in args.local_data[1:]:
+		if path.anchor != root.anchor:
+			parser.error("all inputs must be located within a common directory that will become the torrent's root")
+		for root_ancestor, path_ancestor in zip(chain(reversed(root.parents), [root]), chain(reversed(path.parents), [path])):
+			if root_ancestor != path_ancestor:
+				break
+			root = root_ancestor
+else:
+	root = args.root
+	for path in args.local_data:
+		if not path.is_relative_to(root):
+			parser.error('all inputs must be located within the specified root directory')
+
+if args.piecesize - 1 & args.piecesize:
+	parser.error('piece size must be a power of two')
+
+if args.private:
+	if not args.tracker:
+		parser._warning('private torrent requested but no tracker specified')
+	elif len(args.tracker) > 1:
+		parser._warning('private torrent requested but multiple trackers specified')
+	if args.source is None:
+		parser._warning('private torrent requested but no source specified')
+
+
+def sha1():
+	return hashlib.sha1(usedforsecurity=False)
+try:
+	sha1()
+except TypeError:
+	from hashlib import sha1
+
+
+def rethrow(e):
+	raise e
+
+
+def hash_piece():
+	global piece_filled
+	hash = sha1()
+	hash.update(memoryview(piece_buffer)[:piece_filled])
+	piece_hashes.append(hash.hexdigest())
+	pbar.update(piece_filled)
+	piece_filled = 0
+
+
+files = []
+expected_total = 0
+def collect_file_paths():
+	global expected_total
+	subdirs = []
+	for path in args.local_data:
+		st = path.stat()
+		if stat.S_ISREG(st.st_mode):
+			files.append((path, st.st_size))
+			expected_total += st.st_size
+		elif stat.S_ISDIR(st.st_mode):
+			stack = [path]
+			while stack:
+				path = stack.pop()
+				with os.scandir(path) as it:
+					for entry in it:
+						if entry.is_file():
+							size = entry.stat().st_size
+							file_paths.append((pathlib.Path(entry.path), size))
+							expected_total += size
+						elif entry.is_dir():
+							subdirs.append(entry.path)
+						else:
+							parser.error('not a regular file or directory: ' + entry.path)
+				subdirs.reverse()
+				stack += subdirs
+				subdirs.clear()
+		else:
+			parser.error('not a regular file or directory: ' + str(path))
+collect_file_paths()
+if not files:
+	parser.error('no files found in the input directories')
+
+
+torrent_files = []
+piece_hashes = []
+piece_length = args.piecesize << 10
+piece_buffer = bytearray(piece_length)
+torrent_pos = piece_filled = 0
+with tqdm(total=expected_total, unit='B', unit_scale=True, unit_divisor=1024) as pbar:
+	for path, file_length in files:
+		if not file_length:
+			continue
+		with open(path, 'rb') as stream:
+			if not stat.S_ISREG(os.stat(stream.fileno()).st_mode):
+				parser.error('not a regular file or directory: ' + str(path))
+			actual_file_length = nread = nrequested = 0
+			while nread == nrequested:
+				nread = stream.readinto(memoryview(piece_buffer)[piece_filled:])
+				nrequested = piece_length - piece_filled
+				actual_file_length += nread
+				piece_filled += nread
+				if file_length < actual_file_length:
+					expected_total += actual_file_length - file_length
+					file_length = actual_file_length
+					pbar.total = expected_total
+				if piece_filled == piece_length:
+					hash_piece()
+		if file_length != actual_file_length:
+			expected_total += actual_file_length - file_length
+			pbar.total = expected_total
+		torrent_files.append({
+			'length': actual_file_length,
+			'path': list(path.relative_to(root).parts),
+		})
+	if piece_filled:
+		hash_piece()
+
+needs_explicit_encoding = False
+for file in torrent_files:
+	for part in file['path']:
+		try:
+			part.encode('ascii')
+		except UnicodeEncodeError:
+			needs_explicit_encoding = True
+			break
+	else:
+		continue
+	break
+
+torrent_info = {}
+if root == files[0][0]:
+	torrent_info['length'] = torrent_files[0]['length']
+else:
+	torrent_info['files'] = torrent_files
+torrent_info['name'] = root.name
+torrent_info['piece length'] = piece_length
+torrent_info['pieces'] = piece_hashes
+if args.private:
+	torrent_info['private'] = 1
+if args.source is not None:
+	torrent_info['source'] = args.source
+
+torrent = {}
+if args.tracker:
+	torrent['announce'] = args.tracker[0]
+	if len(args.tracker) > 1:
+		torrent['announce-list'] = [[tracker] for tracker in args.tracker]
+torrent['creation date'] = int(time.time())
+if needs_explicit_encoding:
+	torrent['encoding'] = 'UTF-8'
+torrent['info'] = torrent_info
+
+tp.create_torrent_file(args.outfile, torrent)
