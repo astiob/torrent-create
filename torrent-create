@@ -18,6 +18,7 @@
 import argparse
 import hashlib
 from itertools import chain
+from natsort import natsort_keygen, ns
 import os
 import pathlib
 import stat
@@ -97,6 +98,11 @@ files = []
 expected_total = 0
 def collect_file_paths():
 	global expected_total
+	dirfile_name = lambda pair: pair[0].name
+	subdir_name = lambda path: path.name
+	dirfile_sort_key = natsort_keygen(dirfile_name, ns.IGNORECASE)
+	subdir_sort_key = natsort_keygen(subdir_name, ns.IGNORECASE)
+	dirfiles = []
 	subdirs = []
 	for path in args.local_data:
 		st = path.stat()
@@ -111,13 +117,18 @@ def collect_file_paths():
 					for entry in it:
 						if entry.is_file():
 							size = entry.stat().st_size
-							file_paths.append((pathlib.Path(entry.path), size))
+							dirfiles.append((pathlib.Path(entry.path), size))
 							expected_total += size
 						elif entry.is_dir():
 							subdirs.append(entry.path)
 						else:
 							parser.error('not a regular file or directory: ' + entry.path)
-				subdirs.reverse()
+				dirfiles.sort(key=dirfile_name)
+				dirfiles.sort(key=dirfile_sort_key)
+				files.extend(dirfiles)
+				dirfiles.clear()
+				subdirs.sort(key=subdir_name, reverse=True)
+				subdirs.sort(key=subdir_sort_key, reverse=True)
 				stack += subdirs
 				subdirs.clear()
 		else:
