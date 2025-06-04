@@ -120,7 +120,7 @@ def collect_file_paths():
 							dirfiles.append((pathlib.Path(entry.path), size))
 							expected_total += size
 						elif entry.is_dir():
-							subdirs.append(entry.path)
+							subdirs.append(pathlib.Path(entry.path))
 						else:
 							parser.error('not a regular file or directory: ' + entry.path)
 				dirfiles.sort(key=dirfile_name)
